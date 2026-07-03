@@ -51,8 +51,10 @@ pub struct OrchestrationState {
     /// Master window).
     pub session_id: String,
     /// Stable id for this wake cycle. Derived deterministically from
-    /// `session_id` + the latest message seq so a resumed run reuses it and the
-    /// compressed-history / world-diff store writes stay idempotent.
+    /// `counterpart_agent_id` + `session_id` + the latest message seq so a
+    /// resumed run reuses it and the compressed-history / world-diff store
+    /// writes stay idempotent. The agent id scopes the key so two linked peers
+    /// reporting the same `harness_session_id`/seq don't collide (see `seed`).
     pub cycle_id: String,
     /// The tiny.place `@handle` of the counterpart the reply DM goes back to.
     pub counterpart_agent_id: String,
@@ -98,15 +100,28 @@ impl OrchestrationState {
         messages: Vec<OrchestrationMessage>,
     ) -> Self {
         let session_id = session_id.into();
-        // Deterministic cycle id: session + the latest seq in this window. A
-        // resumed run over the same window recomputes the same id, so the
-        // per-cycle store writes (compressed_history, world_diff) dedupe.
+        let counterpart_agent_id = counterpart_agent_id.into();
+        // Deterministic cycle id: agent + session + the latest seq in this
+        // window. The agent id scopes the key so two linked peers reporting the
+        // same `harness_session_id`/seq don't collide on `compressed_history` /
+        // `world_diff` rows (the store keys sessions by `(agent_id, session_id)`).
+        // A resumed run over the same window recomputes the same id, so the
+        // per-cycle store writes dedupe.
+        //
+        // Migration seam: this format changed from `{session}#{seq}` to
+        // `{counterpart}#{session}#{seq}`. A cycle that was checkpointed under
+        // the old id and only retries *after* the upgrade recomputes a new id,
+        // so its already-written `world_diff` / `compressed_history` rows are not
+        // re-matched. The window is a single in-flight cycle exactly at the
+        // upgrade boundary (Beta feature, gated by `[orchestration]`); the worst
+        // case is one extra timeline entry, not corruption. Not worth a one-time
+        // cleanup here — noted so the boundary behaviour is explicit.
         let latest_seq = messages.iter().map(|m| m.seq).max().unwrap_or(0);
-        let cycle_id = format!("{session_id}#{latest_seq}");
+        let cycle_id = format!("{counterpart_agent_id}#{session_id}#{latest_seq}");
         Self {
             session_id,
             cycle_id,
-            counterpart_agent_id: counterpart_agent_id.into(),
+            counterpart_agent_id,
             messages,
             ..Self::default()
         }
