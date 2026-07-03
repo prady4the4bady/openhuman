@@ -57,6 +57,12 @@ pub struct FieldRequirement {
     pub required: bool,
     /// Placeholder / help text.
     pub placeholder: &'static str,
+    /// Default state for `field_type == "boolean"` fields. The UI seeds the
+    /// checkbox from this so its visible state matches what persists when the
+    /// user doesn't touch it (e.g. `smtp_tls` defaults on). `None` for
+    /// non-boolean fields and booleans that default off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_bool: Option<bool>,
 }
 
 /// Describes one auth mode a channel supports.
@@ -160,6 +166,7 @@ pub fn all_channel_definitions() -> Vec<ChannelDefinition> {
         imessage_definition(),
         lark_definition(),
         dingtalk_definition(),
+        email_definition(),
         yuanbao_definition(),
     ]
 }
@@ -194,6 +201,7 @@ fn telegram_definition() -> ChannelDefinition {
                         field_type: "secret",
                         required: true,
                         placeholder: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+                        default_bool: None,
                     },
                     FieldRequirement {
                         key: "chat_id",
@@ -201,6 +209,7 @@ fn telegram_definition() -> ChannelDefinition {
                         field_type: "string",
                         required: false,
                         placeholder: "Optional: default chat for outbound messages",
+                        default_bool: None,
                     },
                     FieldRequirement {
                         key: "allowed_users",
@@ -208,6 +217,7 @@ fn telegram_definition() -> ChannelDefinition {
                         field_type: "string",
                         required: false,
                         placeholder: "Comma-separated Telegram usernames",
+                        default_bool: None,
                     },
                 ],
                 auth_action: None,
@@ -239,6 +249,7 @@ fn discord_definition() -> ChannelDefinition {
                         field_type: "secret",
                         required: true,
                         placeholder: "Your Discord bot token",
+                        default_bool: None,
                     },
                     FieldRequirement {
                         key: "guild_id",
@@ -246,6 +257,7 @@ fn discord_definition() -> ChannelDefinition {
                         field_type: "string",
                         required: false,
                         placeholder: "Optional: restrict to a specific server",
+                        default_bool: None,
                     },
                     FieldRequirement {
                         key: "channel_id",
@@ -253,6 +265,7 @@ fn discord_definition() -> ChannelDefinition {
                         field_type: "string",
                         required: false,
                         placeholder: "Optional: default channel for outbound messages",
+                        default_bool: None,
                     },
                     FieldRequirement {
                         key: "allowed_users",
@@ -261,6 +274,7 @@ fn discord_definition() -> ChannelDefinition {
                         required: false,
                         placeholder:
                             "Comma-separated Discord user IDs, or * for everyone (blank = everyone)",
+                        default_bool: None,
                     },
                 ],
                 auth_action: None,
@@ -322,6 +336,7 @@ fn imessage_definition() -> ChannelDefinition {
                 field_type: "string",
                 required: false,
                 placeholder: "Comma-separated phone numbers or emails; * to allow any",
+                default_bool: None,
             }],
             auth_action: None,
         }],
@@ -353,6 +368,7 @@ fn lark_definition() -> ChannelDefinition {
                     field_type: "string",
                     required: true,
                     placeholder: "cli_xxxxxxxxxxxx",
+                    default_bool: None,
                 },
                 FieldRequirement {
                     key: "app_secret",
@@ -360,6 +376,7 @@ fn lark_definition() -> ChannelDefinition {
                     field_type: "secret",
                     required: true,
                     placeholder: "Your Lark app secret",
+                    default_bool: None,
                 },
                 FieldRequirement {
                     key: "encrypt_key",
@@ -367,6 +384,7 @@ fn lark_definition() -> ChannelDefinition {
                     field_type: "secret",
                     required: false,
                     placeholder: "Optional — required only if you enabled message encryption",
+                    default_bool: None,
                 },
                 FieldRequirement {
                     key: "verification_token",
@@ -374,6 +392,7 @@ fn lark_definition() -> ChannelDefinition {
                     field_type: "secret",
                     required: false,
                     placeholder: "Optional — used for HTTP webhook verification",
+                    default_bool: None,
                 },
                 FieldRequirement {
                     key: "use_feishu",
@@ -381,6 +400,7 @@ fn lark_definition() -> ChannelDefinition {
                     field_type: "boolean",
                     required: false,
                     placeholder: "On = open.feishu.cn (China); off = open.larksuite.com",
+                    default_bool: None,
                 },
                 FieldRequirement {
                     key: "receive_mode",
@@ -388,6 +408,7 @@ fn lark_definition() -> ChannelDefinition {
                     field_type: "string",
                     required: false,
                     placeholder: "websocket (default) or webhook",
+                    default_bool: None,
                 },
                 FieldRequirement {
                     key: "port",
@@ -401,6 +422,7 @@ fn lark_definition() -> ChannelDefinition {
                     required: false,
                     placeholder:
                         "Optional — local HTTP port when receive_mode = webhook (e.g. 8080)",
+                    default_bool: None,
                 },
                 FieldRequirement {
                     key: "allowed_users",
@@ -408,6 +430,7 @@ fn lark_definition() -> ChannelDefinition {
                     field_type: "string",
                     required: false,
                     placeholder: "Comma-separated open_id / union_id; leave empty to allow any",
+                    default_bool: None,
                 },
             ],
             auth_action: None,
@@ -438,6 +461,7 @@ fn dingtalk_definition() -> ChannelDefinition {
                     field_type: "string",
                     required: true,
                     placeholder: "ding_xxxxxxxxxxxx",
+                    default_bool: None,
                 },
                 FieldRequirement {
                     key: "client_secret",
@@ -445,6 +469,7 @@ fn dingtalk_definition() -> ChannelDefinition {
                     field_type: "secret",
                     required: true,
                     placeholder: "Your DingTalk app secret",
+                    default_bool: None,
                 },
                 FieldRequirement {
                     key: "allowed_users",
@@ -452,11 +477,125 @@ fn dingtalk_definition() -> ChannelDefinition {
                     field_type: "string",
                     required: false,
                     placeholder: "Comma-separated DingTalk userIds; leave empty to allow any",
+                    default_bool: None,
                 },
             ],
             auth_action: None,
         }],
         capabilities: vec![ChannelCapability::SendText, ChannelCapability::ReceiveText],
+    }
+}
+
+/// Native IMAP/SMTP email channel for any standard mailbox (Fastmail, Proton
+/// Bridge, iCloud, self-hosted, …) — the option non-Gmail/non-Outlook users
+/// lacked (#4280). The IMAP IDLE + SMTP wire-protocol already lives in
+/// `src/openhuman/channels/providers/email_channel.rs`; this definition exposes
+/// its config surface to the Connections UI so users no longer need to
+/// hand-edit `config.toml`.
+///
+/// Field keys map 1:1 to `config::schema::channels::EmailConfig` so the
+/// frontend persists credentials through the same `channels_connect` RPC every
+/// other channel uses. `imap_port` / `smtp_port` are typed as plain strings
+/// (FieldRequirement only supports string/secret/boolean); `connect_channel`
+/// parses them back to `u16`.
+fn email_definition() -> ChannelDefinition {
+    ChannelDefinition {
+        id: "email",
+        display_name: "Email (IMAP/SMTP)",
+        description: "Send and receive email via any standard IMAP/SMTP mailbox.",
+        icon: "email",
+        auth_modes: vec![AuthModeSpec {
+            mode: ChannelAuthMode::ApiKey,
+            description: "Provide your mailbox's IMAP/SMTP server settings and an app password.",
+            fields: vec![
+                FieldRequirement {
+                    key: "imap_host",
+                    label: "IMAP Host",
+                    field_type: "string",
+                    required: true,
+                    placeholder: "imap.fastmail.com",
+                    default_bool: None,
+                },
+                FieldRequirement {
+                    key: "imap_port",
+                    label: "IMAP Port",
+                    field_type: "string",
+                    required: false,
+                    placeholder: "993 (TLS)",
+                    default_bool: None,
+                },
+                FieldRequirement {
+                    key: "username",
+                    label: "Email Address",
+                    field_type: "string",
+                    required: true,
+                    placeholder: "you@example.com",
+                    default_bool: None,
+                },
+                FieldRequirement {
+                    key: "password",
+                    label: "Password / App Password",
+                    field_type: "secret",
+                    required: true,
+                    placeholder: "App-specific password (recommended)",
+                    default_bool: None,
+                },
+                FieldRequirement {
+                    key: "smtp_host",
+                    label: "SMTP Host",
+                    field_type: "string",
+                    required: true,
+                    placeholder: "smtp.fastmail.com",
+                    default_bool: None,
+                },
+                FieldRequirement {
+                    key: "smtp_port",
+                    label: "SMTP Port",
+                    field_type: "string",
+                    required: false,
+                    placeholder: "465 (TLS)",
+                    default_bool: None,
+                },
+                FieldRequirement {
+                    key: "smtp_tls",
+                    label: "Use TLS for SMTP",
+                    field_type: "boolean",
+                    required: false,
+                    placeholder: "On = TLS (recommended)",
+                    default_bool: Some(true),
+                },
+                FieldRequirement {
+                    key: "from_address",
+                    label: "From Address",
+                    field_type: "string",
+                    required: false,
+                    placeholder: "Optional — defaults to the email address above",
+                    default_bool: None,
+                },
+                FieldRequirement {
+                    key: "imap_folder",
+                    label: "IMAP Folder",
+                    field_type: "string",
+                    required: false,
+                    placeholder: "Optional — defaults to INBOX",
+                    default_bool: None,
+                },
+                FieldRequirement {
+                    key: "allowed_senders",
+                    label: "Allowed Senders",
+                    field_type: "string",
+                    required: false,
+                    placeholder: "Comma-separated addresses or @domain; * to allow any",
+                    default_bool: None,
+                },
+            ],
+            auth_action: None,
+        }],
+        capabilities: vec![
+            ChannelCapability::SendText,
+            ChannelCapability::ReceiveText,
+            ChannelCapability::FileAttachments,
+        ],
     }
 }
 
@@ -479,6 +618,7 @@ fn yuanbao_definition() -> ChannelDefinition {
                     field_type: "string",
                     required: true,
                     placeholder: "元宝开放平台 AppID",
+                    default_bool: None,
                 },
                 FieldRequirement {
                     key: "app_secret",
@@ -486,6 +626,7 @@ fn yuanbao_definition() -> ChannelDefinition {
                     field_type: "secret",
                     required: true,
                     placeholder: "元宝开放平台 AppSecret",
+                    default_bool: None,
                 },
             ],
             auth_action: None,
