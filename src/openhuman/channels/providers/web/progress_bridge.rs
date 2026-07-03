@@ -414,7 +414,10 @@ pub(crate) fn spawn_progress_bridge(
                     output_chars,
                     elapsed_ms,
                     iteration,
+                    failure,
                 } => {
+                    // Serialize the classified failure (if any) for the UI + ledger.
+                    let failure_json = failure.as_ref().and_then(|f| serde_json::to_value(f).ok());
                     ledger_append_event(
                         &config,
                         RunEventAppend {
@@ -426,7 +429,8 @@ pub(crate) fn spawn_progress_bridge(
                                 "success": success,
                                 "outputChars": output_chars,
                                 "elapsedMs": elapsed_ms,
-                                "iteration": iteration
+                                "iteration": iteration,
+                                "failure": failure_json,
                             }),
                         },
                     );
@@ -444,6 +448,7 @@ pub(crate) fn spawn_progress_bridge(
                         success: Some(success),
                         round: Some(iteration),
                         tool_call_id: Some(call_id),
+                        failure: failure_json,
                         ..Default::default()
                     });
                 }
