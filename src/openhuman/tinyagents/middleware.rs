@@ -1594,8 +1594,10 @@ impl Middleware<()> for CostBudgetMiddleware {
 /// - [`NoProgress::Continue`] — do nothing.
 /// - [`NoProgress::Nudge`] — inject the crate's structured "no progress since
 ///   step X" corrective into the working transcript via
-///   [`SteeringCommand::Redirect`] so the next model call sees it and changes
-///   strategy *before* the same-strategy retry cap trips.
+///   [`SteeringCommand::InjectMessage`] so the next model call sees it and
+///   changes strategy *before* the same-strategy retry cap trips. (Not
+///   `Redirect`: that verb is outside the Interactive steering allowlist and
+///   would abort the turn — see the nudge call site.)
 /// - [`NoProgress::Halt`] — record the crate's root-cause summary into the shared
 ///   [`HaltSummarySlot`](super::HaltSummarySlot) (the turn overrides its final
 ///   text with it) and pause the run via the shared steering handle (same
