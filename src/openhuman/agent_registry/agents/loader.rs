@@ -675,10 +675,21 @@ mod tests {
         assert!(matches!(def.model, ModelSpec::Hint(ref h) if h == "chat"));
         match def.tools {
             ToolScope::Named(tools) => {
-                // spawn_subagent was removed in #1141; spawn_worker_thread is the replacement
+                // spawn_subagent was removed in #1141. spawn_worker_thread is
+                // disabled pending its UI (#1624) and unregistered, so the
+                // named scope must not advertise it.
                 assert!(
-                    tools.iter().any(|t| t == "spawn_worker_thread"),
-                    "orchestrator must have spawn_worker_thread"
+                    !tools.iter().any(|t| t == "spawn_worker_thread"),
+                    "spawn_worker_thread is disabled (#1624) and must not be named"
+                );
+                // Async sub-agent control surface taught by prompt.md.
+                assert!(
+                    tools.iter().any(|t| t == "steer_subagent"),
+                    "orchestrator must have steer_subagent to steer async workers"
+                );
+                assert!(
+                    tools.iter().any(|t| t == "wait_subagent"),
+                    "orchestrator must have wait_subagent to collect async results"
                 );
                 assert!(
                     tools.iter().any(|t| t == "spawn_async_subagent"),
@@ -697,8 +708,31 @@ mod tests {
                     "spawn_subagent must not appear — removed in #1141"
                 );
                 assert!(!tools.iter().any(|t| t == "call_memory_agent"));
-                assert!(!tools.iter().any(|t| t == "shell"));
-                assert!(!tools.iter().any(|t| t == "file_write"));
+                // Write tools and shell stay OUT — the chat-tier
+                // orchestrator must not mutate files or run commands; all
+                // modification is deferred to `run_code` / owning
+                // specialists where edits live next to build/test/verify.
+                for forbidden in ["shell", "edit", "file_write", "apply_patch"] {
+                    assert!(
+                        !tools.iter().any(|t| t == forbidden),
+                        "orchestrator must NOT have write/exec tool `{forbidden}`"
+                    );
+                }
+                // Basic READ-ONLY direct surface: quick lookups without
+                // spawning a sub-agent per touch.
+                for direct in [
+                    "file_read",
+                    "grep",
+                    "glob",
+                    "list",
+                    "web_search_tool",
+                    "web_fetch",
+                ] {
+                    assert!(
+                        tools.iter().any(|t| t == direct),
+                        "orchestrator must have read-only direct tool `{direct}`"
+                    );
+                }
             }
             ToolScope::Wildcard => panic!("orchestrator must have named tool allowlist"),
         }
@@ -1367,9 +1401,11 @@ mod tests {
                     "spawn_subagent",
                     "spawn_worker_thread",
                     "delegate_to_integrations_agent",
-                    "delegate_run_code",
-                    "delegate_research",
-                    "delegate_plan",
+                    // Synthesised delegation tools use the unprefixed
+                    // `delegate_name` overrides — forbid those names too.
+                    "run_code",
+                    "research",
+                    "plan",
                 ] {
                     assert!(
                         !tools.iter().any(|t| t == forbidden),
@@ -1463,9 +1499,11 @@ mod tests {
                     "spawn_subagent",
                     "spawn_worker_thread",
                     "delegate_to_integrations_agent",
-                    "delegate_run_code",
-                    "delegate_research",
-                    "delegate_plan",
+                    // Synthesised delegation tools use the unprefixed
+                    // `delegate_name` overrides — forbid those names too.
+                    "run_code",
+                    "research",
+                    "plan",
                     "wallet_execute_prepared",
                     "wallet_prepare_transfer",
                     "web3_swap_execute",
