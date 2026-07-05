@@ -532,6 +532,12 @@ pub async fn start_channels(mut config: Config) -> Result<()> {
         );
     }
 
+    // Assemble the ChannelHost capability surface (shutdown, STT/TTS, reaction
+    // gate, approvals, conversation store, event sink). Ported rich providers
+    // reach host capabilities through this instead of calling core internals.
+    let channel_host =
+        crate::openhuman::channels::host::build_channel_host(Arc::new(config.clone()));
+
     // Collect active channels
     let mut channels: Vec<Arc<dyn Channel>> = Vec::new();
 
@@ -544,19 +550,32 @@ pub async fn start_channels(mut config: Config) -> Result<()> {
             draft_update_interval_ms = tg.draft_update_interval_ms,
             "[channels] telegram enabled in core config (bot token not logged)"
         );
-        channels.push(Arc::new(
-            TelegramChannel::new(
-                tg.bot_token.clone(),
-                tg.allowed_users.clone(),
-                tg.mention_only,
-            )
-            .with_streaming(
-                tg.stream_mode,
-                tg.draft_update_interval_ms,
-                tg.silent_streaming,
-            )
-            .with_chat_id(tg.chat_id.clone()),
+        let mut telegram = TelegramChannel::new(
+            tg.bot_token.clone(),
+            tg.allowed_users.clone(),
+            tg.mention_only,
+        )
+        .with_streaming(
+            tg.stream_mode,
+            tg.draft_update_interval_ms,
+            tg.silent_streaming,
+        )
+        .with_chat_id(tg.chat_id.clone())
+        .with_http_client(crate::openhuman::config::build_runtime_proxy_client(
+            "channel.telegram",
         ));
+        // Inject host capabilities: voice STT, persisted allowlist, reaction
+        // event fan-out. Each is optional — telegram degrades gracefully.
+        if let Some(transcriber) = channel_host.transcriber() {
+            telegram = telegram.with_transcriber(transcriber);
+        }
+        if let Some(allowlist) = channel_host.allowlist() {
+            telegram = telegram.with_allowlist(allowlist);
+        }
+        if let Some(events) = channel_host.events() {
+            telegram = telegram.with_events(events);
+        }
+        channels.push(Arc::new(telegram));
     } else {
         tracing::info!(
             "[channels] telegram not configured (no channels_config.telegram in saved config)"
@@ -564,13 +583,14 @@ pub async fn start_channels(mut config: Config) -> Result<()> {
     }
 
     if let Some(ref dc) = config.channels_config.discord {
-        channels.push(Arc::new(DiscordChannel::new(
+        channels.push(Arc::new(DiscordChannel::with_http_client(
             dc.bot_token.clone(),
             dc.guild_id.clone(),
             dc.channel_id.clone(),
             dc.allowed_users.clone(),
             dc.listen_to_bots,
             dc.mention_only,
+            crate::openhuman::config::build_runtime_proxy_client("channel.discord"),
         )));
     }
 
@@ -588,13 +608,14 @@ pub async fn start_channels(mut config: Config) -> Result<()> {
     }
 
     if let Some(ref mm) = config.channels_config.mattermost {
-        channels.push(Arc::new(MattermostChannel::new(
+        channels.push(Arc::new(MattermostChannel::with_http_client(
             mm.url.clone(),
             mm.bot_token.clone(),
             mm.channel_id.clone(),
             mm.allowed_users.clone(),
             mm.thread_replies.unwrap_or(true),
             mm.mention_only.unwrap_or(false),
+            crate::openhuman::config::build_runtime_proxy_client("channel.mattermost"),
         )));
     }
 
@@ -646,12 +667,16 @@ pub async fn start_channels(mut config: Config) -> Result<()> {
                 // Web mode: requires session_path
                 #[cfg(feature = "whatsapp-web")]
                 if wa.is_web_config() {
-                    channels.push(Arc::new(WhatsAppWebChannel::new(
+                    let mut wa_channel = WhatsAppWebChannel::new(
                         wa.session_path.clone().unwrap_or_default(),
                         wa.pair_phone.clone(),
                         wa.pair_code.clone(),
                         wa.allowed_numbers.clone(),
-                    )));
+                    );
+                    if let Some(lifecycle) = channel_host.lifecycle() {
+                        wa_channel = wa_channel.with_lifecycle(lifecycle);
+                    }
+                    channels.push(Arc::new(wa_channel));
                 } else {
                     tracing::warn!("WhatsApp Web configured but session_path not set");
                 }
@@ -699,18 +724,20 @@ pub async fn start_channels(mut config: Config) -> Result<()> {
     }
 
     if let Some(ref dt) = config.channels_config.dingtalk {
-        channels.push(Arc::new(DingTalkChannel::new(
+        channels.push(Arc::new(DingTalkChannel::with_http_client(
             dt.client_id.clone(),
             dt.client_secret.clone(),
             dt.allowed_users.clone(),
+            crate::openhuman::config::build_runtime_proxy_client("channel.dingtalk"),
         )));
     }
 
     if let Some(ref qq) = config.channels_config.qq {
-        channels.push(Arc::new(QQChannel::new(
+        channels.push(Arc::new(QQChannel::with_http_client(
             qq.app_id.clone(),
             qq.app_secret.clone(),
             qq.allowed_users.clone(),
+            crate::openhuman::config::build_runtime_proxy_client("channel.qq"),
         )));
     }
 
