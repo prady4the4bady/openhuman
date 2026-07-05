@@ -2991,13 +2991,11 @@ pub(crate) fn handle_tinyplace_signal_key_status(_params: Map<String, Value>) ->
                     .metadata
                     .as_ref()
                     .and_then(|m| m.get("encryptionPublicKey"));
-                let current_key_b64 = base64::engine::general_purpose::STANDARD.encode(
-                    store
-                        .identity_x25519_key_pair()
-                        .await
-                        .map(|kp| kp.public_key)
-                        .unwrap_or([0u8; 32]),
-                );
+                // The card advertises the Ed25519 identity key (the addressable
+                // messaging key where the bundle + mailbox live), not the X25519
+                // DH key — see `signal_register_encryption_key`. Compare against
+                // that so readiness reflects what peers actually resolve.
+                let current_key_b64 = signer.public_key_base64();
                 let matches = published_key
                     .map(|pk| pk == &current_key_b64)
                     .unwrap_or(false);
@@ -3611,32 +3609,35 @@ pub(crate) fn handle_tinyplace_contacts_stats(_params: Map<String, Value>) -> Co
 
 // ── Signal: encryption key registration (0D) ────────────────────────────────
 
-/// Publish the user's X25519 identity public key on their directory card as
+/// Publish the user's Ed25519 identity key (the addressable cryptoId, where the
+/// Signal prekey bundle + mailbox live) on their directory card as
 /// `metadata.encryptionPublicKey`. This makes the user discoverable for
-/// encrypted DMs via `find_agent_by_encryption_key`.
+/// encrypted DMs via `find_agent_by_encryption_key`; peers derive the X25519 DH
+/// key from the fetched bundle themselves.
 ///
-/// SECURITY: only the PUBLIC key is published. The private key never leaves
-/// the `FileSessionStore`.
+/// SECURITY: only the PUBLIC key is published.
 pub(crate) fn handle_tinyplace_signal_register_encryption_key(
     _params: Map<String, Value>,
 ) -> ControllerFuture {
     Box::pin(async move {
         log::debug!("{LOG_PREFIX} signal_register_encryption_key");
 
-        // 1. Read identity public key from the signal store.
-        let store = crate::openhuman::tinyplace::signal_store::global_signal_store().await?;
-        let identity_kp = store
-            .identity_x25519_key_pair()
-            .await
-            .map_err(|e| format!("identity key: {e}"))?;
-        let encryption_key_b64 =
-            base64::engine::general_purpose::STANDARD.encode(identity_kp.public_key);
-        log::debug!("{LOG_PREFIX} signal_register_encryption_key derived key (not logging value)");
-
-        // 2. Acquire client and signer.
+        // 1. Acquire client and signer.
         let client = global_state().client().await?;
         let signer = require_signer(client)?;
         let agent_id = signer.agent_id();
+
+        // 2. The messaging key peers resolve from this directory card must be the
+        //    wallet's **Ed25519 identity key** — that is the addressable identity
+        //    where the Signal prekey bundle is published (`/keys/<cryptoId>/bundle`)
+        //    and where the mailbox is keyed. Peers derive the X25519 DH key from
+        //    the bundle's identity key themselves (see `decode_identity_key`), so
+        //    they never need a separate X25519 key advertised here. Publishing the
+        //    X25519 key instead made every peer resolve to a *bundle-less* key and
+        //    404 on the bundle fetch — the exact reason inbound DMs never reached
+        //    this agent. Advertise the identity key so resolution + delivery align.
+        let encryption_key_b64 = signer.public_key_base64();
+        log::debug!("{LOG_PREFIX} signal_register_encryption_key advertising identity key (value not logged)");
 
         // 3. Fetch current AgentCard to preserve existing fields. A wallet that
         //    has Signal keys but no directory presence yet (e.g. it registered a
