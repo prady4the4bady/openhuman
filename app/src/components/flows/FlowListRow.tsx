@@ -24,6 +24,7 @@ import { useT } from '../../lib/i18n/I18nContext';
 import type { Flow } from '../../services/api/flowsApi';
 import SettingsSwitch from '../settings/controls/SettingsSwitch';
 import Button from '../ui/Button';
+import FlowRowMenu from './FlowRowMenu';
 
 /** Which of this row's actions currently has a request in flight, if any. */
 export type FlowListRowBusy = 'toggle' | 'run' | null;
@@ -40,6 +41,10 @@ export interface FlowListRowProps {
   onView: (flow: Flow) => void;
   /** Downloads this flow's `WorkflowGraph` as a JSON file (Phase 4d export). */
   onExport: (flow: Flow) => void;
+  /** Creates a disabled copy of this flow (`flows_duplicate`). */
+  onDuplicate: (flow: Flow) => void;
+  /** Permanently deletes this flow after a confirm (`flows_delete`). */
+  onDelete: (flow: Flow) => void;
   busy?: FlowListRowBusy;
 }
 
@@ -75,6 +80,8 @@ const FlowListRow = ({
   onViewRuns,
   onView,
   onExport,
+  onDuplicate,
+  onDelete,
   busy = null,
 }: FlowListRowProps) => {
   const { t } = useT();
@@ -103,26 +110,29 @@ const FlowListRow = ({
           </button>
           <div className="mt-0.5 text-[11px] text-content-faint">{lastRunLabel}</div>
         </div>
-        <span
-          data-testid={`flow-status-${flow.id}`}
-          className={`flex-shrink-0 rounded-full border px-2 py-1 text-[11px] font-semibold uppercase ${
-            flow.enabled
-              ? 'border-sage-200 bg-sage-50 text-sage-700 dark:border-sage-500/30 dark:bg-sage-500/10 dark:text-sage-300'
-              : 'border-line bg-surface-subtle text-content-secondary'
-          }`}>
-          {flow.enabled ? t('flows.list.enabled') : t('flows.list.paused')}
-        </span>
+        {/* Enable/disable control paired with its state label as a single group,
+            so the toggle is self-describing (the bare switch was ambiguous) and
+            state isn't split between a top-right badge and a bottom-left switch. */}
+        <div className="flex flex-shrink-0 items-center gap-2">
+          <span
+            data-testid={`flow-status-${flow.id}`}
+            className={`text-[11px] font-semibold uppercase tracking-wide ${
+              flow.enabled ? 'text-sage-700 dark:text-sage-300' : 'text-content-secondary'
+            }`}>
+            {flow.enabled ? t('flows.list.enabled') : t('flows.list.paused')}
+          </span>
+          <SettingsSwitch
+            id={`flow-toggle-${flow.id}`}
+            data-testid={`flow-toggle-${flow.id}`}
+            checked={flow.enabled}
+            disabled={toggleBusy}
+            aria-label={t('flows.list.toggleEnabled')}
+            onCheckedChange={() => onToggle(flow)}
+          />
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <SettingsSwitch
-          id={`flow-toggle-${flow.id}`}
-          data-testid={`flow-toggle-${flow.id}`}
-          checked={flow.enabled}
-          disabled={toggleBusy}
-          aria-label={t('flows.list.toggleEnabled')}
-          onCheckedChange={() => onToggle(flow)}
-        />
         <Button
           type="button"
           variant="secondary"
@@ -140,14 +150,32 @@ const FlowListRow = ({
           onClick={() => onRun(flow)}>
           {runBusy ? t('flows.list.running') : t('flows.list.runNow')}
         </Button>
-        <Button
-          type="button"
-          variant="tertiary"
-          size="sm"
-          data-testid={`flow-export-${flow.id}`}
-          onClick={() => onExport(flow)}>
-          {t('flows.list.export')}
-        </Button>
+        <div className="ml-auto">
+          <FlowRowMenu
+            rowId={flow.id}
+            items={[
+              {
+                key: 'export',
+                label: t('flows.list.export'),
+                onSelect: () => onExport(flow),
+                testId: `flow-export-${flow.id}`,
+              },
+              {
+                key: 'duplicate',
+                label: t('flows.list.duplicate'),
+                onSelect: () => onDuplicate(flow),
+                testId: `flow-duplicate-${flow.id}`,
+              },
+              {
+                key: 'delete',
+                label: t('flows.list.delete'),
+                onSelect: () => onDelete(flow),
+                danger: true,
+                testId: `flow-delete-${flow.id}`,
+              },
+            ]}
+          />
+        </div>
       </div>
     </div>
   );

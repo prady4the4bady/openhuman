@@ -20,14 +20,15 @@ import { useCallback, useId, useMemo, useState } from 'react';
 
 import { useT } from '../../../../lib/i18n/I18nContext';
 import type { FlowConnection } from '../../../../services/api/flowsApi';
+import type { UpstreamExpressionOption } from './upstreamOptions';
 
 const log = createDebug('app:flows:nodeConfig:fields');
 
-const INPUT_CLASS =
+export const INPUT_CLASS =
   'w-full rounded-lg border border-line-strong bg-surface px-2.5 py-1.5 text-sm text-content ' +
   'placeholder-content-faint transition-colors focus:border-primary-500 focus:outline-none ' +
   'focus:ring-2 focus:ring-primary-500/20 disabled:opacity-50';
-const MONO_CLASS = 'font-mono text-[13px]';
+export const MONO_CLASS = 'font-mono text-[13px]';
 
 /** Read a string field off a free-form config object, defaulting to `''`. */
 export function configString(config: Record<string, unknown>, key: string): string {
@@ -167,6 +168,153 @@ export function SelectField({ label, hint, value, onChange, options, testId }: S
 }
 
 /**
+ * Canonical model route hints (mirrors `AgentEditorPage`'s list, which in turn
+ * mirrors the Rust `ModelSpec::Hint(...)` slugs). Selecting one routes the
+ * agent node by capability tier; the workspace resolves the concrete model.
+ */
+export const AGENT_MODEL_HINTS = [
+  'hint:reasoning',
+  'hint:chat',
+  'hint:agentic',
+  'hint:burst',
+  'hint:coding',
+  'hint:summarization',
+  'hint:vision',
+] as const;
+
+/** Sentinel select value for "type a raw model id" — never persisted. */
+const CUSTOM_MODEL = '__custom__';
+
+export interface ModelHintFieldProps {
+  label: string;
+  hint?: string;
+  value: string;
+  onChange: (value: string) => void;
+  testId?: string;
+}
+
+/**
+ * Model selector for the `agent` node: a dropdown of the workspace's model
+ * route hints (`hint:chat`, `hint:coding`, …) with an "inherit" default and a
+ * custom escape hatch for a raw BYOK model id. Writes `hint:<tier>` (or the raw
+ * id, or `''` to inherit) onto `config.model`. Mirrors the agent-editor model
+ * picker so hints stay consistent across the app.
+ */
+export function ModelHintField({ label, hint, value, onChange, testId }: ModelHintFieldProps) {
+  const { t } = useT();
+  const id = useId();
+  // A value that's neither empty nor a known hint is a raw custom model id, so
+  // the picker opens in custom mode showing it in the text box.
+  const isKnown = value === '' || (AGENT_MODEL_HINTS as readonly string[]).includes(value);
+  const [customMode, setCustomMode] = useState(value !== '' && !isKnown);
+
+  const handleSelect = useCallback(
+    (next: string) => {
+      if (next === CUSTOM_MODEL) {
+        setCustomMode(true);
+        // Entering custom from a hint/inherit starts with an empty raw id.
+        if (isKnown) onChange('');
+        return;
+      }
+      setCustomMode(false);
+      onChange(next);
+    },
+    [isKnown, onChange]
+  );
+
+  return (
+    <Field label={label} hint={hint} htmlFor={id}>
+      <div className="space-y-2">
+        <select
+          id={id}
+          className={INPUT_CLASS}
+          value={customMode ? CUSTOM_MODEL : value}
+          data-testid={testId}
+          onChange={e => handleSelect(e.target.value)}>
+          <option value="">{t('flows.nodeConfig.agent.modelInherit')}</option>
+          <optgroup label={t('flows.nodeConfig.agent.modelHints')}>
+            {AGENT_MODEL_HINTS.map(h => (
+              <option key={h} value={h}>
+                {h}
+              </option>
+            ))}
+          </optgroup>
+          <option value={CUSTOM_MODEL}>{t('flows.nodeConfig.agent.modelCustom')}</option>
+        </select>
+        {customMode && (
+          <input
+            type="text"
+            className={`${INPUT_CLASS} ${MONO_CLASS}`}
+            value={value}
+            placeholder={t('flows.nodeConfig.agent.modelCustomPlaceholder')}
+            aria-label={t('flows.nodeConfig.agent.modelCustomPlaceholder')}
+            data-testid={testId ? `${testId}-custom` : undefined}
+            onChange={e => onChange(e.target.value)}
+          />
+        )}
+      </div>
+    </Field>
+  );
+}
+
+/**
+ * Compact "insert an upstream value" dropdown (Feature: `nodes` scope picker).
+ * Always renders with the empty placeholder selected; picking an option calls
+ * `onInsert(expression)` and snaps back to the placeholder, so it acts as a
+ * one-shot menu button rather than a stateful select (same sentinel-select
+ * pattern as `composioFields.tsx`). Renders nothing when there are no options.
+ */
+export function UpstreamInsertSelect({
+  options,
+  onInsert,
+  testId,
+  className,
+}: {
+  options: UpstreamExpressionOption[];
+  onInsert: (expression: string) => void;
+  testId?: string;
+  className?: string;
+}) {
+  const { t } = useT();
+  if (options.length === 0) return null;
+  return (
+    <select
+      className={
+        className ??
+        'max-w-[45%] shrink-0 cursor-pointer border-l border-line-strong bg-surface-muted px-1.5 text-[11px] text-content-muted focus:outline-none'
+      }
+      value=""
+      title={t('flows.nodeConfig.upstream.insertLabel', 'Insert a value from a previous step')}
+      aria-label={t('flows.nodeConfig.upstream.insertLabel', 'Insert a value from a previous step')}
+      data-testid={testId}
+      onChange={e => {
+        if (!e.target.value) return;
+        log('UpstreamInsertSelect: insert %s', e.target.value);
+        onInsert(e.target.value);
+      }}>
+      <option value="" disabled>
+        {t('flows.nodeConfig.upstream.insert', 'Insert…')}
+      </option>
+      {options.map(opt => (
+        <option key={opt.value} value={opt.value}>
+          {opt.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+export interface ExpressionFieldProps extends TextFieldProps {
+  /**
+   * `=nodes.…` expressions from upstream nodes; when non-empty a compact
+   * insert dropdown renders beside the input (picking replaces the value).
+   */
+  upstreamOptions?: UpstreamExpressionOption[];
+  /** Non-blocking warning (amber border + message), e.g. "Required — not wired". */
+  warning?: string;
+}
+
+/**
  * A field whose value is commonly a tinyflows `=`-expression. Monospace input
  * with a leading "Expression" badge + hint so authors recognize `=item.foo`
  * as a live, input-bound value rather than a literal.
@@ -178,12 +326,18 @@ export function ExpressionField({
   onChange,
   placeholder,
   testId,
-}: TextFieldProps) {
+  upstreamOptions,
+  warning,
+}: ExpressionFieldProps) {
   const { t } = useT();
   const id = useId();
+  const borderClass = warning
+    ? 'border-amber-400 focus-within:border-amber-500 focus-within:ring-amber-500/20'
+    : 'border-line-strong focus-within:border-primary-500 focus-within:ring-primary-500/20';
   return (
     <Field label={label} hint={hint ?? t('flows.nodeConfig.expressionHint')} htmlFor={id}>
-      <div className="flex items-stretch overflow-hidden rounded-lg border border-line-strong bg-surface focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500/20">
+      <div
+        className={`flex items-stretch overflow-hidden rounded-lg border bg-surface focus-within:ring-2 ${borderClass}`}>
         <span
           className="flex select-none items-center border-r border-line-strong bg-surface-muted px-2 font-mono text-[11px] font-semibold text-content-muted"
           title={t('flows.nodeConfig.expressionBadge')}
@@ -199,7 +353,19 @@ export function ExpressionField({
           data-testid={testId}
           onChange={e => onChange(e.target.value)}
         />
+        {upstreamOptions && upstreamOptions.length > 0 && (
+          <UpstreamInsertSelect
+            options={upstreamOptions}
+            onInsert={onChange}
+            testId={testId ? `${testId}-upstream` : undefined}
+          />
+        )}
       </div>
+      {warning && (
+        <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400" role="alert">
+          {warning}
+        </p>
+      )}
     </Field>
   );
 }
@@ -210,6 +376,8 @@ export interface KeyMapFieldProps {
   value: Record<string, string>;
   onChange: (value: Record<string, string>) => void;
   monoValues?: boolean;
+  /** When non-empty, each row's value gets an upstream-expression insert menu. */
+  upstreamOptions?: UpstreamExpressionOption[];
   testId?: string;
 }
 
@@ -224,6 +392,7 @@ export function KeyMapField({
   value,
   onChange,
   monoValues,
+  upstreamOptions,
   testId,
 }: KeyMapFieldProps) {
   const { t } = useT();
@@ -272,6 +441,17 @@ export function KeyMapField({
                 commit(next);
               }}
             />
+            {upstreamOptions && upstreamOptions.length > 0 && (
+              <UpstreamInsertSelect
+                options={upstreamOptions}
+                onInsert={expr => {
+                  const next = rows.slice();
+                  next[i] = [k, expr];
+                  commit(next);
+                }}
+                className="w-20 shrink-0 cursor-pointer rounded-md border border-line-strong bg-surface-muted px-1 py-1 text-[11px] text-content-muted focus:outline-none"
+              />
+            )}
             <button
               type="button"
               className="shrink-0 rounded-md px-1.5 py-1 text-content-faint hover:bg-surface-hover hover:text-coral-600"

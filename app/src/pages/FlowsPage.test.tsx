@@ -23,6 +23,8 @@ const runFlow = vi.hoisted(() => vi.fn());
 const listFlowRuns = vi.hoisted(() => vi.fn());
 const createFlow = vi.hoisted(() => vi.fn());
 const importFlow = vi.hoisted(() => vi.fn());
+const deleteFlow = vi.hoisted(() => vi.fn());
+const duplicateFlow = vi.hoisted(() => vi.fn());
 // Flow Scout discovery clients — rendered via the SuggestedWorkflows section.
 const discoverWorkflows = vi.hoisted(() => vi.fn());
 const listSuggestions = vi.hoisted(() => vi.fn());
@@ -35,6 +37,8 @@ vi.mock('../services/api/flowsApi', () => ({
   listFlowRuns,
   createFlow,
   importFlow,
+  deleteFlow,
+  duplicateFlow,
   discoverWorkflows,
   listSuggestions,
   dismissSuggestion,
@@ -198,18 +202,17 @@ describe('FlowsPage', () => {
     expect(screen.getByTestId('new-workflow-modal')).toBeInTheDocument();
   });
 
-  it('"describe it" in the chooser focuses the in-place prompt bar (no Chat hand-off)', async () => {
+  it('always shows the in-place prompt bar and the chooser no longer duplicates it', async () => {
     listFlows.mockResolvedValue([makeFlow()]);
     renderWithProviders(<FlowsPage />);
 
-    fireEvent.click(await screen.findByTestId('flows-new-workflow'));
-    fireEvent.click(screen.getByTestId('new-workflow-describe'));
+    // The prompt bar is the single "describe a workflow" entry point.
+    expect(await screen.findByTestId('workflow-prompt-bar')).toBeInTheDocument();
 
-    // Phase 5c: no more /chat hand-off — the chooser closes and the prompt bar
-    // (already rendered at the top of the page) takes focus for authoring.
-    expect(mockNavigate).not.toHaveBeenCalledWith('/chat');
-    expect(screen.getByTestId('workflow-prompt-bar')).toBeInTheDocument();
-    expect(screen.getByTestId('workflow-prompt-input')).toHaveFocus();
+    // The chooser modal offers scratch + template only — no redundant describe.
+    fireEvent.click(await screen.findByTestId('flows-new-workflow'));
+    expect(screen.getByTestId('new-workflow-scratch')).toBeInTheDocument();
+    expect(screen.queryByTestId('new-workflow-describe')).not.toBeInTheDocument();
   });
 
   it('empty-state template gallery creates a flow and opens its canvas', async () => {
@@ -238,9 +241,37 @@ describe('FlowsPage', () => {
     listFlows.mockResolvedValue([makeFlow({ graph: { nodes: [], edges: [] } })]);
     renderWithProviders(<FlowsPage />);
 
+    // Export now lives behind the row's "⋯" overflow menu.
+    fireEvent.click(await screen.findByTestId('flow-menu-flow-1'));
     fireEvent.click(await screen.findByTestId('flow-export-flow-1'));
 
     expect(downloadFlowGraph).toHaveBeenCalledWith('Daily digest', { nodes: [], edges: [] });
+  });
+
+  it('deletes a flow via the overflow menu + confirm dialog', async () => {
+    listFlows.mockResolvedValueOnce([makeFlow()]).mockResolvedValueOnce([]);
+    deleteFlow.mockResolvedValue('flow-1');
+    renderWithProviders(<FlowsPage />);
+
+    fireEvent.click(await screen.findByTestId('flow-menu-flow-1'));
+    fireEvent.click(await screen.findByTestId('flow-delete-flow-1'));
+
+    // Confirm dialog gates the destructive call.
+    expect(deleteFlow).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByTestId('flow-delete-confirm-button'));
+
+    await waitFor(() => expect(deleteFlow).toHaveBeenCalledWith('flow-1'));
+  });
+
+  it('duplicates a flow via the overflow menu', async () => {
+    listFlows.mockResolvedValue([makeFlow()]);
+    duplicateFlow.mockResolvedValue(makeFlow({ id: 'flow-2', name: 'Daily digest copy' }));
+    renderWithProviders(<FlowsPage />);
+
+    fireEvent.click(await screen.findByTestId('flow-menu-flow-1'));
+    fireEvent.click(await screen.findByTestId('flow-duplicate-flow-1'));
+
+    await waitFor(() => expect(duplicateFlow).toHaveBeenCalledWith('flow-1'));
   });
 
   it('imports a picked JSON file and opens the result as a draft canvas', async () => {

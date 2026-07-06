@@ -93,9 +93,40 @@ describe('FlowCanvas (editable)', () => {
     expect(graph.edges).toEqual([]);
   });
 
-  it('disables the delete button when nothing is selected', () => {
+  it('does not render Delete/Validate in the top toolbar (moved onto node cards)', () => {
     renderCanvas(<FlowCanvas editable nodes={[triggerNode()]} edges={[]} />);
-    expect(screen.getByTestId('flow-editor-delete')).toBeDisabled();
+    expect(screen.queryByTestId('flow-editor-delete')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('flow-editor-validate')).not.toBeInTheDocument();
+    // Undo/redo + Save still live in the toolbar.
+    expect(screen.getByTestId('flow-editor-undo')).toBeInTheDocument();
+  });
+
+  it('shows the onboarding hint on a near-empty canvas and hides it after a node is added', () => {
+    renderCanvas(<FlowCanvas editable nodes={[triggerNode()]} edges={[]} />);
+    expect(screen.getByTestId('flow-editor-onboarding')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('flow-palette-item-agent'));
+    expect(screen.queryByTestId('flow-editor-onboarding')).not.toBeInTheDocument();
+  });
+
+  it('undoes and redoes a palette add', () => {
+    renderCanvas(<FlowCanvas editable nodes={[triggerNode()]} edges={[]} />);
+    // Undo starts disabled (empty history); redo too.
+    expect(screen.getByTestId('flow-editor-undo')).toBeDisabled();
+    expect(screen.getByTestId('flow-editor-redo')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('flow-palette-item-agent'));
+    expect(screen.getAllByTestId('flow-node')).toHaveLength(2);
+    expect(screen.getByTestId('flow-editor-undo')).not.toBeDisabled();
+
+    // Undo removes the added node and enables redo.
+    fireEvent.click(screen.getByTestId('flow-editor-undo'));
+    expect(screen.getAllByTestId('flow-node')).toHaveLength(1);
+    expect(screen.getByTestId('flow-editor-undo')).toBeDisabled();
+    expect(screen.getByTestId('flow-editor-redo')).not.toBeDisabled();
+
+    // Redo brings it back.
+    fireEvent.click(screen.getByTestId('flow-editor-redo'));
+    expect(screen.getAllByTestId('flow-node')).toHaveLength(2);
   });
 
   it('exposes no Save button when onSave is not provided', () => {

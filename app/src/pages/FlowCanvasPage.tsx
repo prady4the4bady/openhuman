@@ -22,9 +22,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import FlowCanvas from '../components/flows/canvas/FlowCanvas';
+import FlowRunsSidebar from '../components/flows/FlowRunsSidebar';
 import WorkflowCopilotPanel from '../components/flows/WorkflowCopilotPanel';
+import {
+  getCopilotThreadId,
+  setCopilotThreadId as setCopilotThreadIdCache,
+} from '../components/flows/workflowCopilotThreads';
 import { ToastContainer } from '../components/intelligence/Toast';
 import PanelPage from '../components/layout/PanelPage';
+import { SidebarContent } from '../components/layout/shell/SidebarSlot';
 import Button from '../components/ui/Button';
 import { CenteredLoadingState, ErrorBanner } from '../components/ui/LoadingState';
 import { asFlowCanvasDraftState } from '../lib/flows/canvasDraft';
@@ -123,10 +129,44 @@ function FlowEditor({
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
 
-  const { flowId, name, graph, requireApproval } = editorFlow;
+  const { flowId, graph, requireApproval } = editorFlow;
   // Draft (unsaved) canvases have no persisted id yet; Save creates the flow
   // rather than updating one, and there is nothing runnable to run.
   const isDraft = flowId === null;
+
+  // Editable flow name. `name` is the committed value (used by Save + the run
+  // header); `titleDraft` is the in-progress input buffer. Renaming a persisted
+  // flow is metadata-only (`flows_update({ name })`) — it never touches the
+  // graph, so it can't fire a schedule, and is safe to persist on blur/Enter
+  // without the graph's explicit-Save gate. A draft just updates locally; the
+  // name rides into `flows_create` when the draft is first Saved.
+  const [name, setName] = useState(editorFlow.name);
+  const [titleDraft, setTitleDraft] = useState(editorFlow.name);
+  const [renaming, setRenaming] = useState(false);
+
+  const commitRename = useCallback(async () => {
+    const trimmed = titleDraft.trim();
+    if (!trimmed || trimmed === name) {
+      setTitleDraft(name);
+      return;
+    }
+    if (isDraft) {
+      log('rename (draft): %s', trimmed);
+      setName(trimmed);
+      return;
+    }
+    setRenaming(true);
+    try {
+      log('rename: flow id=%s name=%s', flowId, trimmed);
+      await updateFlow(flowId, { name: trimmed });
+      setName(trimmed);
+    } catch (err) {
+      log('rename failed: id=%s err=%o', flowId, err);
+      setTitleDraft(name);
+    } finally {
+      setRenaming(false);
+    }
+  }, [titleDraft, name, isDraft, flowId]);
 
   // ── Canvas copilot + draft overlay (Phase 5c) ─────────────────────────────
   // `draftGraph` is the current ACCEPTED draft (starts as the loaded graph),
@@ -136,6 +176,19 @@ function FlowEditor({
   // commits the proposed graph into `draftGraph`; Reject reverts to the frozen
   // base. NOTHING here persists — the canvas's own Save is the only gate.
   const [copilotOpen, setCopilotOpen] = useState(initialCopilotSeed !== null);
+  // Per-workflow copilot thread: seeded from the session cache so opening/closing
+  // the panel (or switching flows and back) resumes the same conversation
+  // instead of starting a fresh `workflow_builder` thread each time.
+  const [copilotThreadId, setCopilotThreadId] = useState<string | null>(() =>
+    getCopilotThreadId(flowId)
+  );
+  const handleCopilotThreadId = useCallback(
+    (id: string | null) => {
+      setCopilotThreadId(id);
+      setCopilotThreadIdCache(flowId, id);
+    },
+    [flowId]
+  );
   const [draftGraph, setDraftGraph] = useState<WorkflowGraph>(graph);
   const [preview, setPreview] = useState<{
     proposal: WorkflowProposal;
@@ -346,13 +399,44 @@ function FlowEditor({
     </div>
   );
 
+  // Editable title: an unstyled input that reads as the page heading until
+  // focused, so renaming is discoverable without a separate edit affordance.
+  const titleNode = (
+    <input
+      type="text"
+      value={titleDraft}
+      disabled={renaming}
+      data-testid="flow-canvas-title"
+      aria-label={t('flows.canvas.renameLabel')}
+      onChange={e => setTitleDraft(e.target.value)}
+      onBlur={() => void commitRename()}
+      onKeyDown={e => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          e.currentTarget.blur();
+        } else if (e.key === 'Escape') {
+          setTitleDraft(name);
+          e.currentTarget.blur();
+        }
+      }}
+      className="w-full max-w-md truncate rounded-md border border-transparent bg-transparent px-1 py-0.5 text-base font-semibold text-content hover:border-line focus:border-primary-400 focus:outline-none disabled:opacity-60"
+    />
+  );
+
   return (
     <PanelPage
       testId="flow-canvas-page"
-      title={name}
+      title={titleNode}
       leading={backButton}
       action={headerActions}
       contentClassName="h-full p-0">
+      {/* Project this flow's run history into the left shell sidebar while it's
+          open (persisted flows only — a draft has no runs yet). */}
+      {!isDraft && flowId && (
+        <SidebarContent>
+          <FlowRunsSidebar flowId={flowId} />
+        </SidebarContent>
+      )}
       <div className="flex h-full w-full">
         <div className="relative h-full flex-1">
           <FlowCanvas
@@ -421,11 +505,14 @@ function FlowEditor({
         {copilotOpen && (
           <WorkflowCopilotPanel
             graph={preview?.base ?? draftGraph}
+            flowId={flowId}
             onProposal={handleProposal}
             onAccept={handleAcceptProposal}
             onReject={handleRejectProposal}
             onClose={() => setCopilotOpen(false)}
             repairSeed={copilotRepairSeed}
+            seedThreadId={copilotThreadId}
+            onThreadIdChange={handleCopilotThreadId}
           />
         )}
       </div>

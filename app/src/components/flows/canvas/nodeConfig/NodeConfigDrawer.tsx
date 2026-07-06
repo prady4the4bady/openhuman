@@ -19,12 +19,15 @@ import createDebug from 'debug';
 import { memo, useCallback, useMemo, useState } from 'react';
 
 import { useEscapeKey } from '../../../../hooks/useEscapeKey';
-import type { FlowNode } from '../../../../lib/flows/graphAdapter';
+import type { FlowEdge, FlowNode } from '../../../../lib/flows/graphAdapter';
 import { nodeKindMeta } from '../../../../lib/flows/nodeKindMeta';
+import { describeNode } from '../../../../lib/flows/nodeSummary';
 import { useT } from '../../../../lib/i18n/I18nContext';
 import type { FlowConnection } from '../../../../services/api/flowsApi';
 import { JsonField } from './nodeConfigFields';
 import { NODE_CONFIG_FORMS } from './nodeConfigForms';
+import { NodeConnections } from './NodeConnections';
+import { type UpstreamExpressionOption, upstreamExpressionOptions } from './upstreamOptions';
 
 const log = createDebug('app:flows:nodeConfig:drawer');
 
@@ -41,16 +44,26 @@ export interface NodeConfigDrawerProps {
   onChange: (nodeId: string, patch: NodeConfigPatch) => void;
   /** Secret-free credential refs for the picker (loaded once by the canvas). */
   connections: FlowConnection[];
+  /** All graph nodes — used to derive the upstream `=nodes.…` picker options. */
+  nodes?: FlowNode[];
+  /** All graph edges — the drawer shows the selected node's incident ones. */
+  edges?: FlowEdge[];
+  /** Node id → display name, for labelling the other end of each connection. */
+  nodeLabelById?: Record<string, string>;
+  /** Remove a single edge by id (from the connections list). */
+  onRemoveEdge?: (edgeId: string) => void;
 }
 
 function NodeConfigBody({
   node,
   onChange,
   connections,
+  upstreamOptions,
 }: {
   node: FlowNode;
   onChange: (nodeId: string, patch: NodeConfigPatch) => void;
   connections: FlowConnection[];
+  upstreamOptions: UpstreamExpressionOption[];
 }) {
   const { t } = useT();
   const config = useMemo(() => node.data.config ?? {}, [node.data.config]);
@@ -94,7 +107,12 @@ function NodeConfigBody({
       )}
 
       {Form && !rawMode ? (
-        <Form config={config} onChange={mergeConfig} connections={connections} />
+        <Form
+          config={config}
+          onChange={mergeConfig}
+          connections={connections}
+          upstreamOptions={upstreamOptions}
+        />
       ) : (
         <JsonField
           label={t('flows.nodeConfig.rawJsonLabel')}
@@ -109,7 +127,16 @@ function NodeConfigBody({
   );
 }
 
-function NodeConfigDrawer({ node, onClose, onChange, connections }: NodeConfigDrawerProps) {
+function NodeConfigDrawer({
+  node,
+  onClose,
+  onChange,
+  connections,
+  nodes = [],
+  edges = [],
+  nodeLabelById = {},
+  onRemoveEdge = () => {},
+}: NodeConfigDrawerProps) {
   const { t } = useT();
 
   useEscapeKey(() => {
@@ -117,10 +144,20 @@ function NodeConfigDrawer({ node, onClose, onChange, connections }: NodeConfigDr
     onClose();
   }, node !== null);
 
+  // Upstream `=nodes.…` picker options for the selected node's expression
+  // fields — its transitive ancestors' outputs (Feature: `nodes` scope).
+  const upstreamOptions = useMemo(
+    () => (node ? upstreamExpressionOptions(node.id, nodes, edges) : []),
+    [node, nodes, edges]
+  );
+
   if (!node) return null;
 
   const meta = nodeKindMeta(node.data.kind);
   const kindLabel = t(`flows.nodeKind.${node.data.kind}`, node.data.kind);
+  // Dynamic "what this node will do", derived from the live config — updates as
+  // the fields below are edited (same summary shown on the node card).
+  const summary = describeNode(node.data.kind, node.data.config ?? {}, node.data.outputPorts);
 
   return (
     // `pointer-events-none` wrapper so the drawer floats over the canvas
@@ -135,12 +172,16 @@ function NodeConfigDrawer({ node, onClose, onChange, connections }: NodeConfigDr
             {meta.emoji}
           </span>
           <div className="min-w-0 flex-1">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-content-faint">
-              {kindLabel}
-            </div>
+            {/* Kind eyebrow — hidden when it just repeats the name (a default,
+                unrenamed node), so the header doesn't show the title twice. */}
+            {node.data.name.trim() !== kindLabel && (
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-content-faint">
+                {kindLabel}
+              </div>
+            )}
             <input
               type="text"
-              className="mt-0.5 w-full border-0 bg-transparent p-0 text-sm font-semibold text-content focus:outline-none focus:ring-0"
+              className="w-full border-0 bg-transparent p-0 text-sm font-semibold text-content focus:outline-none focus:ring-0"
               value={node.data.name}
               aria-label={t('flows.nodeConfig.nameLabel')}
               placeholder={t('flows.nodeConfig.namePlaceholder')}
@@ -158,9 +199,30 @@ function NodeConfigDrawer({ node, onClose, onChange, connections }: NodeConfigDr
           </button>
         </header>
 
-        <div className="flex-1 overflow-y-auto px-3.5 py-3.5">
+        <div className="flex-1 space-y-4 overflow-y-auto px-3.5 py-3.5">
+          {/* Live, config-derived description of what this node will do. */}
+          {summary && (
+            <p
+              className="rounded-lg border border-line bg-surface-muted px-2.5 py-1.5 text-[11px] leading-snug text-content-muted"
+              data-testid="node-config-summary">
+              {summary}
+            </p>
+          )}
+          {/* Incoming/outgoing edge connections — inspect + remove them here. */}
+          <NodeConnections
+            nodeId={node.id}
+            edges={edges}
+            nodeLabelById={nodeLabelById}
+            onRemoveEdge={onRemoveEdge}
+          />
           {/* Keyed by node id so the JSON editor's local buffer re-seeds on switch. */}
-          <NodeConfigBody key={node.id} node={node} onChange={onChange} connections={connections} />
+          <NodeConfigBody
+            key={node.id}
+            node={node}
+            onChange={onChange}
+            connections={connections}
+            upstreamOptions={upstreamOptions}
+          />
         </div>
       </aside>
     </div>

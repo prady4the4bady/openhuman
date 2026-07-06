@@ -21,6 +21,14 @@
 //! executes against `tinyflows`' deterministic **mock** capabilities so no real
 //! LLM / tool / HTTP / code side effect can fire. Only the user's own
 //! "Save & enable" click (→ `openhuman.flows_create`) writes anything.
+//!
+//! The agent's full tool scope (see `agent_registry/agents/workflow_builder/
+//! agent.toml`) also grants the Composio **discovery/connect** tools —
+//! `composio_list_toolkits`, `composio_list_connections`, `composio_connect`
+//! (defined in `composio/tools.rs`) — so the builder can link an app the
+//! workflow needs before proposing. Those stay within the invariant: connect
+//! is an approval-gated OAuth hand-off, and `composio_execute` (running a real
+//! action) remains deliberately OUT of scope.
 
 use std::sync::Arc;
 
@@ -156,7 +164,10 @@ impl Tool for ReviseWorkflowTool {
         };
 
         let summary = super::tools::build_summary(&graph);
-        let warnings = ops::graph_trigger_warnings(&graph);
+        let mut warnings = ops::graph_trigger_warnings(&graph);
+        // Author-time wiring check: unwired REQUIRED Composio args come back
+        // as warnings naming the field, before the user ever saves.
+        warnings.extend(ops::graph_wiring_warnings(&self.config, &graph).await);
         let graph_value = serde_json::to_value(&graph)?;
 
         tracing::info!(
@@ -613,13 +624,20 @@ impl Tool for SearchToolCatalogTool {
 /// Autonomy-tier gated (issue: Phase 2 node gating): read-only tier refuses,
 /// mirroring the `SecurityPolicy` contract that a read-only session cannot
 /// exercise executable capability even in simulation.
+///
+/// **Wiring preflight:** the mock tool invoker is wrapped in the host's
+/// [`PreflightToolInvoker`](crate::openhuman::tinyflows::caps::PreflightToolInvoker),
+/// so a Composio `tool_call` whose required arg is missing or `=`-resolved to
+/// null fails the dry run with the same actionable, field-naming error a real
+/// run would produce — the echo mocks alone would happily accept a null `to`.
 pub struct DryRunWorkflowTool {
     security: Arc<SecurityPolicy>,
+    config: Arc<Config>,
 }
 
 impl DryRunWorkflowTool {
-    pub fn new(security: Arc<SecurityPolicy>) -> Self {
-        Self { security }
+    pub fn new(security: Arc<SecurityPolicy>, config: Arc<Config>) -> Self {
+        Self { security, config }
     }
 }
 
@@ -719,7 +737,13 @@ impl Tool for DryRunWorkflowTool {
             }
         };
 
-        let caps = tinyflows::caps::mock::mock_capabilities();
+        let mut caps = tinyflows::caps::mock::mock_capabilities();
+        // Wiring preflight over the echo mocks (see the struct doc): required
+        // Composio args must be present and non-null even in the sandbox.
+        caps.tools = std::sync::Arc::new(crate::openhuman::tinyflows::caps::PreflightToolInvoker {
+            config: self.config.clone(),
+            inner: caps.tools.clone(),
+        });
         let run = tinyflows::engine::run(&compiled, input, &caps);
         let outcome = match tokio::time::timeout(
             std::time::Duration::from_secs(DRY_RUN_TIMEOUT_SECS),
