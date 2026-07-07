@@ -29,7 +29,6 @@ import {
 } from '../services/chatService';
 import { store } from '../store';
 import {
-  appendProcessingProse,
   appendSubagentStreamDelta,
   bumpInferenceHeartbeatForThread,
   clearInferenceStatusForThread,
@@ -42,18 +41,18 @@ import {
   markInferenceTurnStreaming,
   parseToolFailure,
   recordChatTurnUsage,
-  recordProcessingTool,
   recordSubagentTranscriptTool,
   resolveSubagentTranscriptTool,
   setInferenceStatusForThread,
-  setParallelStream,
   setPendingApprovalForThread,
   setPendingPlanReviewForThread,
   setStreamingAssistantForThread,
   setTaskBoardForThread,
   setToolTimelineForThread,
   setWorkflowProposalForThread,
-  type StreamingAssistantState,
+  streamDeltaReceived,
+  toolCallReceived,
+  toolResultReceived,
   type ToolTimelineEntry,
   type ToolTimelineEntryStatus,
   upsertArtifactFailedForThread,
@@ -622,44 +621,17 @@ const ChatRuntimeProvider = ({ children }: { children: React.ReactNode }) => {
         // forked turns that share a thread_id keep independent chains (#4288).
         skillLatencyRef.current.noteToolCall(segmentDeliveryKey(event.thread_id, event.request_id));
 
-        const existing = store.getState().chatRuntime.toolTimelineByThread[event.thread_id] ?? [];
-        const existingIdx = event.tool_call_id
-          ? existing.findIndex(entry => entry.id === event.tool_call_id)
-          : -1;
-
-        // Stable row id, shared with the processing-transcript tool pointer so
-        // the panel can resolve the row by `callId`.
-        const rowId =
-          event.tool_call_id ??
-          `${event.thread_id}:${event.round}:${existing.length}:${event.tool_name}`;
-
-        let entries: ToolTimelineEntry[];
-        if (existingIdx >= 0) {
-          entries = [...existing];
-          entries[existingIdx] = decorateEntry({
-            ...entries[existingIdx],
-            name: event.tool_name,
-            round: event.round,
-            status: 'running',
-            displayName: event.tool_display_label ?? entries[existingIdx].displayName,
-            detail: event.tool_display_detail ?? entries[existingIdx].detail,
-          });
-        } else {
-          entries = [
-            ...existing,
-            decorateEntry({
-              id: rowId,
-              name: event.tool_name,
-              round: event.round,
-              status: 'running',
-              displayName: event.tool_display_label,
-              detail: event.tool_display_detail,
-            }),
-          ];
-        }
-        dispatch(setToolTimelineForThread({ threadId: event.thread_id, entries }));
+        // Merge + processing-pointer are now a single reducer (Phase 3) — no
+        // getState()/full-array rebuild in the provider.
         dispatch(
-          recordProcessingTool({ threadId: event.thread_id, round: event.round, callId: rowId })
+          toolCallReceived({
+            threadId: event.thread_id,
+            round: event.round,
+            toolName: event.tool_name,
+            toolCallId: event.tool_call_id,
+            displayLabel: event.tool_display_label,
+            displayDetail: event.tool_display_detail,
+          })
         );
       },
       onToolResult: (event: ChatToolResultEvent) => {
@@ -669,59 +641,19 @@ const ChatRuntimeProvider = ({ children }: { children: React.ReactNode }) => {
         )
           return;
 
-        // On failure, parse the optional structured explanation (#4254) once so
-        // both the id-match and name/round-fallback paths can attach it. A
-        // successful result clears any stale failure carried on the row.
-        const failure = event.success ? undefined : parseToolFailure(event.failure);
-
-        const existing = store.getState().chatRuntime.toolTimelineByThread[event.thread_id] ?? [];
-        if (existing.length > 0) {
-          const nextEntries = [...existing];
-          let changed = false;
-
-          // The core forwards the (size-capped) tool result text on `output`;
-          // keep it on the row so the timeline can show what the tool
-          // returned. Older cores sent a metadata stub here — accept only
-          // non-empty payloads so a stub-less row stays `undefined`.
-          const result = event.output && event.output.length > 0 ? event.output : undefined;
-
-          if (event.tool_call_id) {
-            const idx = nextEntries.findIndex(entry => entry.id === event.tool_call_id);
-            if (idx >= 0) {
-              nextEntries[idx] = {
-                ...nextEntries[idx],
-                status: event.success ? 'success' : 'error',
-                failure,
-                result,
-              };
-              changed = true;
-            }
-          }
-
-          if (!changed) {
-            for (let i = nextEntries.length - 1; i >= 0; i -= 1) {
-              const entry = nextEntries[i];
-              if (
-                entry.status === 'running' &&
-                entry.name === event.tool_name &&
-                entry.round === event.round
-              ) {
-                nextEntries[i] = {
-                  ...entry,
-                  status: event.success ? 'success' : 'error',
-                  failure,
-                  result,
-                };
-                changed = true;
-                break;
-              }
-            }
-          }
-
-          if (changed) {
-            dispatch(setToolTimelineForThread({ threadId: event.thread_id, entries: nextEntries }));
-          }
-        }
+        // Settle the matching row in the reducer (Phase 3) — no getState() /
+        // full-array rebuild. A no-op when no row matches.
+        dispatch(
+          toolResultReceived({
+            threadId: event.thread_id,
+            round: event.round,
+            toolName: event.tool_name,
+            toolCallId: event.tool_call_id,
+            success: event.success,
+            output: event.output,
+            failure: event.failure,
+          })
+        );
 
         // Agent-first Workflow authoring (issue B4): a completed
         // `propose_workflow` call carries a `workflow_proposal` JSON payload
@@ -1095,80 +1027,26 @@ const ChatRuntimeProvider = ({ children }: { children: React.ReactNode }) => {
         }
       },
       onTextDelta: event => {
-        const cr = store.getState().chatRuntime;
-        // A parallel (forked) turn streams into its own lane so it doesn't
-        // clobber the primary turn's stream on the same thread.
-        if (cr.parallelRequestThreads[event.request_id] !== undefined) {
-          const prev = cr.parallelStreamsByThread[event.thread_id]?.[event.request_id];
-          dispatch(
-            setParallelStream({
-              threadId: event.thread_id,
-              streaming: {
-                requestId: event.request_id,
-                content: `${prev?.content ?? ''}${event.delta}`,
-                thinking: prev?.thinking ?? '',
-              },
-            })
-          );
-          return;
-        }
-        const existing = cr.streamingAssistantByThread[event.thread_id];
-        let streaming: StreamingAssistantState;
-        if (existing && existing.requestId !== event.request_id) {
-          streaming = { requestId: event.request_id, content: event.delta, thinking: '' };
-        } else {
-          streaming = {
-            requestId: event.request_id,
-            content: `${existing?.content ?? ''}${event.delta}`,
-            thinking: existing?.thinking ?? '',
-          };
-        }
-        dispatch(setStreamingAssistantForThread({ threadId: event.thread_id, streaming }));
-        // Build the live interleaved processing transcript so a mid-turn
-        // "View processing" isn't empty (the persisted one lands on settle).
+        // Parallel-vs-primary routing + processing transcript now live in the
+        // reducer (Phase 3) — no getState() in the provider.
         dispatch(
-          appendProcessingProse({
+          streamDeltaReceived({
             threadId: event.thread_id,
-            kind: 'narration',
+            requestId: event.request_id,
             round: event.round,
             delta: event.delta,
+            channel: 'content',
           })
         );
       },
       onThinkingDelta: event => {
-        const cr = store.getState().chatRuntime;
-        if (cr.parallelRequestThreads[event.request_id] !== undefined) {
-          const prev = cr.parallelStreamsByThread[event.thread_id]?.[event.request_id];
-          dispatch(
-            setParallelStream({
-              threadId: event.thread_id,
-              streaming: {
-                requestId: event.request_id,
-                content: prev?.content ?? '',
-                thinking: `${prev?.thinking ?? ''}${event.delta}`,
-              },
-            })
-          );
-          return;
-        }
-        const existing = cr.streamingAssistantByThread[event.thread_id];
-        let streaming: StreamingAssistantState;
-        if (existing && existing.requestId !== event.request_id) {
-          streaming = { requestId: event.request_id, content: '', thinking: event.delta };
-        } else {
-          streaming = {
-            requestId: event.request_id,
-            content: existing?.content ?? '',
-            thinking: `${existing?.thinking ?? ''}${event.delta}`,
-          };
-        }
-        dispatch(setStreamingAssistantForThread({ threadId: event.thread_id, streaming }));
         dispatch(
-          appendProcessingProse({
+          streamDeltaReceived({
             threadId: event.thread_id,
-            kind: 'thinking',
+            requestId: event.request_id,
             round: event.round,
             delta: event.delta,
+            channel: 'thinking',
           })
         );
       },
