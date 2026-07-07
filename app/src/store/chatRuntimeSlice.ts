@@ -13,7 +13,11 @@ import type {
   PersistedTurnState,
   TaskBoard,
 } from '../types/turnState';
-import { formatTimelineEntry, isKnownClientTool } from '../utils/toolTimelineFormatting';
+import {
+  formatTimelineEntry,
+  isKnownClientTool,
+  promptFromArgsBuffer,
+} from '../utils/toolTimelineFormatting';
 import { resetUserScopedState } from './resetActions';
 
 const turnStateLog = debug('chatRuntime.turnState');
@@ -250,6 +254,33 @@ function decorateEntry(entry: ToolTimelineEntry): ToolTimelineEntry {
     return { ...entry, displayName: entry.displayName, detail: entry.detail ?? formatted.detail };
   }
   return { ...entry, displayName: formatted.title, detail: formatted.detail ?? entry.detail };
+}
+
+/**
+ * Find the parent `spawn_*`/`delegate_*` tool row a just-spawned subagent should
+ * collapse into, so the timeline shows one entry per delegation. Returns the
+ * source tool name, the delegation prompt, and the spawn row's id to remove.
+ * Pure — searches the round's running rows newest-first.
+ */
+export function findPendingDelegationContext(
+  entries: ToolTimelineEntry[],
+  round: number
+): { sourceToolName?: string; prompt?: string; spawnEntryId?: string } {
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    if (entry.status !== 'running' || entry.round !== round) continue;
+    if (
+      ['spawn_subagent', 'spawn_async_subagent'].includes(entry.name) ||
+      entry.name.startsWith('delegate_')
+    ) {
+      return {
+        sourceToolName: entry.name,
+        prompt: entry.detail ?? promptFromArgsBuffer(entry.argsBuffer),
+        spawnEntryId: entry.id,
+      };
+    }
+  }
+  return {};
 }
 
 export interface ToolTimelineEntry {
@@ -1209,6 +1240,236 @@ const chatRuntimeSlice = createSlice({
       }
     },
     /**
+     * Reducer-side merge for a `tool_args_delta` socket event (Phase 3).
+     * Appends the streamed args to the matching row (by `toolCallId`, else the
+     * newest running row of the same name+round), or creates a running row when
+     * the args arrive before the tool-call event. Re-decorates each time.
+     */
+    toolArgsDeltaReceived: (
+      state,
+      action: PayloadAction<{
+        threadId: string;
+        round: number;
+        delta: string;
+        toolName?: string;
+        toolCallId?: string;
+      }>
+    ) => {
+      const { threadId, round, delta, toolName, toolCallId } = action.payload;
+      const entries = (state.toolTimelineByThread[threadId] ??= []);
+      let matchIdx = -1;
+      if (toolCallId) matchIdx = entries.findIndex(e => e.id === toolCallId);
+      if (matchIdx < 0 && toolName) {
+        matchIdx = entries.findIndex(
+          e => e.status === 'running' && e.name === toolName && e.round === round
+        );
+      }
+      if (matchIdx >= 0) {
+        const prev = entries[matchIdx];
+        entries[matchIdx] = decorateEntry({
+          ...prev,
+          argsBuffer: `${prev.argsBuffer ?? ''}${delta}`,
+          name: prev.name.length === 0 && toolName ? toolName : prev.name,
+        });
+      } else {
+        entries.push(
+          decorateEntry({
+            id: toolCallId ?? '',
+            name: toolName ?? '',
+            round,
+            status: 'running',
+            argsBuffer: delta,
+          })
+        );
+      }
+    },
+    /**
+     * Reducer-side merges for the sub-agent event family (Phase 3). Each locates
+     * the delegation's timeline row by its precomputed `rowId` and updates the
+     * nested `subagent` activity in place — no `getState()` / full-array rebuild
+     * in the provider.
+     */
+    subagentSpawned: (
+      state,
+      action: PayloadAction<{
+        threadId: string;
+        round: number;
+        rowId: string;
+        taskId: string;
+        agentId: string;
+        displayName?: string;
+        workerThreadId?: string;
+        mode?: string;
+        dedicatedThread?: boolean;
+      }>
+    ) => {
+      const {
+        threadId,
+        round,
+        rowId,
+        taskId,
+        agentId,
+        displayName,
+        workerThreadId,
+        mode,
+        dedicatedThread,
+      } = action.payload;
+      const entries = (state.toolTimelineByThread[threadId] ??= []);
+      // Idempotent: a socket redelivery must not append a second row with the
+      // same id (later updates find only the first). Not gated by the provider's
+      // event-seen map, so guard here.
+      if (entries.some(e => e.id === rowId)) return;
+      const pending = findPendingDelegationContext(entries, round);
+      // Collapse the parent spawn/delegate row into the subagent row so the
+      // timeline shows one entry per delegation.
+      if (pending.spawnEntryId) {
+        const spawnIdx = entries.findIndex(e => e.id === pending.spawnEntryId);
+        if (spawnIdx >= 0) entries.splice(spawnIdx, 1);
+      }
+      entries.push(
+        decorateEntry({
+          id: rowId,
+          name: `subagent:${agentId}`,
+          round,
+          status: 'running',
+          detail: pending.prompt,
+          sourceToolName: pending.sourceToolName,
+          subagent: {
+            taskId,
+            agentId,
+            displayName,
+            workerThreadId,
+            mode,
+            dedicatedThread,
+            prompt: pending.prompt,
+            toolCalls: [],
+            transcript: [],
+          },
+        })
+      );
+    },
+    subagentAwaitingUser: (state, action: PayloadAction<{ threadId: string; rowId: string }>) => {
+      const entry = state.toolTimelineByThread[action.payload.threadId]?.find(
+        e => e.id === action.payload.rowId && e.status === 'running'
+      );
+      if (!entry) return;
+      entry.status = 'awaiting_user';
+      if (entry.subagent) entry.subagent.status = 'awaiting_user';
+    },
+    subagentDone: (
+      state,
+      action: PayloadAction<{
+        threadId: string;
+        rowId: string;
+        success: boolean;
+        iterations?: number;
+        elapsedMs?: number;
+        outputChars?: number;
+        worktreePath?: string;
+        changedFiles?: string[];
+        isDirty?: boolean;
+      }>
+    ) => {
+      const {
+        threadId,
+        rowId,
+        success,
+        iterations,
+        elapsedMs,
+        outputChars,
+        worktreePath,
+        changedFiles,
+        isDirty,
+      } = action.payload;
+      // Settle a still-in-flight row: `running`, or `awaiting_user` (a subagent
+      // paused for input that then completes must not stay stuck at
+      // awaiting_user). Already-terminal rows are left as-is.
+      const entry = state.toolTimelineByThread[threadId]?.find(
+        e => e.id === rowId && (e.status === 'running' || e.status === 'awaiting_user')
+      );
+      if (!entry) return;
+      entry.status = success ? 'success' : 'error';
+      if (entry.subagent) {
+        const s = entry.subagent;
+        if (iterations !== undefined) s.iterations = iterations;
+        if (elapsedMs !== undefined) s.elapsedMs = elapsedMs;
+        if (outputChars !== undefined) s.outputChars = outputChars;
+        if (worktreePath !== undefined) s.worktreePath = worktreePath;
+        if (changedFiles !== undefined) s.changedFiles = changedFiles;
+        if (isDirty !== undefined) s.isDirty = isDirty;
+      }
+    },
+    subagentIterationStarted: (
+      state,
+      action: PayloadAction<{
+        threadId: string;
+        rowId: string;
+        childIteration?: number;
+        childMaxIterations?: number;
+      }>
+    ) => {
+      const { threadId, rowId, childIteration, childMaxIterations } = action.payload;
+      const entry = state.toolTimelineByThread[threadId]?.find(e => e.id === rowId);
+      if (!entry?.subagent) return;
+      if (childIteration !== undefined) entry.subagent.childIteration = childIteration;
+      if (childMaxIterations !== undefined) entry.subagent.childMaxIterations = childMaxIterations;
+    },
+    subagentToolCallReceived: (
+      state,
+      action: PayloadAction<{
+        threadId: string;
+        rowId: string;
+        callId: string;
+        toolName: string;
+        iteration?: number;
+        args?: unknown;
+        displayName?: string;
+        detail?: string;
+      }>
+    ) => {
+      const { threadId, rowId, callId, toolName, iteration, args, displayName, detail } =
+        action.payload;
+      const entry = state.toolTimelineByThread[threadId]?.find(e => e.id === rowId);
+      if (!entry?.subagent) return;
+      // De-dupe on call_id — a redelivered event must not append twice.
+      if (entry.subagent.toolCalls.some(c => c.callId === callId)) return;
+      entry.subagent.toolCalls.push({
+        callId,
+        toolName,
+        status: 'running',
+        iteration,
+        args,
+        displayName,
+        detail,
+      });
+    },
+    subagentToolResultReceived: (
+      state,
+      action: PayloadAction<{
+        threadId: string;
+        rowId: string;
+        callId: string;
+        success: boolean;
+        elapsedMs?: number;
+        outputChars?: number;
+        result?: string;
+        failure?: unknown;
+      }>
+    ) => {
+      const { threadId, rowId, callId, success, elapsedMs, outputChars, result, failure } =
+        action.payload;
+      const entry = state.toolTimelineByThread[threadId]?.find(e => e.id === rowId);
+      if (!entry?.subagent) return;
+      const call = entry.subagent.toolCalls.find(c => c.callId === callId);
+      if (!call) return;
+      call.status = success ? 'success' : 'error';
+      if (elapsedMs !== undefined) call.elapsedMs = elapsedMs;
+      if (outputChars !== undefined) call.outputChars = outputChars;
+      if (result !== undefined) call.result = result;
+      // A successful result clears any stale failure on the row.
+      call.failure = success ? undefined : parseToolFailure(failure);
+    },
+    /**
      * Optimistically mark a detached background sub-agent as cancelled after the
      * user confirms a cancel via `openhuman.subagent_cancel`. The aborted run
      * emits no terminal socket event, so without this the row would keep showing
@@ -1808,6 +2069,13 @@ export const {
   clearToolTimelineForThread,
   setTurnTimelinesForThread,
   streamDeltaReceived,
+  subagentAwaitingUser,
+  subagentDone,
+  subagentIterationStarted,
+  subagentSpawned,
+  subagentToolCallReceived,
+  subagentToolResultReceived,
+  toolArgsDeltaReceived,
   toolCallReceived,
   toolResultReceived,
   clearProcessingForThread,
