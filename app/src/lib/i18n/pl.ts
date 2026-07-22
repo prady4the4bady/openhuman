@@ -527,6 +527,18 @@ const messages: TranslationMap = {
   'agentWorld.directory.profile.loadError': 'Nie udało się załadować pełnego profilu.',
   'agentWorld.identities': 'Tożsamości',
   'agentWorld.profiles': 'Profile',
+  'agentWorld.transferHandle.action': 'Przekaż',
+  'agentWorld.transferHandle.title': 'Przekaż handle',
+  'agentWorld.transferHandle.warning':
+    "Przekazanie handle'a jest trwałe i nie można go cofnąć. Odbiorca staje się jego jedynym właścicielem.",
+  'agentWorld.transferHandle.recipientPlaceholder': '@handle odbiorcy',
+  'agentWorld.transferHandle.confirm': 'Przekaż handle',
+  'agentWorld.transferHandle.submitting': 'Przekazywanie…',
+  'agentWorld.transferHandle.recipientRequired': 'Podaj handle odbiorcy.',
+  'agentWorld.transferHandle.confirmLabel': 'Wpisz handle, aby potwierdzić',
+  'agentWorld.transferHandle.confirmMismatch': 'Wpisany handle nie pasuje.',
+  'agentWorld.transferHandle.primaryLocked':
+    "Podstawowego handle'a nie można przekazać. Najpierw ustaw inny handle jako aktywny.",
   'agentWorld.profile.edit': 'Edytuj profil',
   'agentWorld.profile.displayName': 'Wyświetlana nazwa',
   'agentWorld.profile.bio': 'Bio',

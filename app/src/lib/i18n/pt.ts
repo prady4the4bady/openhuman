@@ -520,6 +520,18 @@ const messages: TranslationMap = {
   'agentWorld.directory.profile.loadError': 'Não foi possível carregar o perfil completo.',
   'agentWorld.identities': 'Identidades',
   'agentWorld.profiles': 'Perfis',
+  'agentWorld.transferHandle.action': 'Transferir',
+  'agentWorld.transferHandle.title': 'Transferir handle',
+  'agentWorld.transferHandle.warning':
+    'Transferir um handle é permanente e não pode ser desfeito. O destinatário torna-se o seu único proprietário.',
+  'agentWorld.transferHandle.recipientPlaceholder': '@handle do destinatário',
+  'agentWorld.transferHandle.confirm': 'Transferir handle',
+  'agentWorld.transferHandle.submitting': 'A transferir…',
+  'agentWorld.transferHandle.recipientRequired': 'Introduza o handle do destinatário.',
+  'agentWorld.transferHandle.confirmLabel': 'Digite o handle para confirmar',
+  'agentWorld.transferHandle.confirmMismatch': 'O handle digitado não corresponde.',
+  'agentWorld.transferHandle.primaryLocked':
+    'Um identificador principal não pode ser transferido. Ative outro identificador primeiro.',
   'agentWorld.profile.edit': 'Editar perfil',
   'agentWorld.profile.displayName': 'Nome de exibição',
   'agentWorld.profile.bio': 'Bio',
