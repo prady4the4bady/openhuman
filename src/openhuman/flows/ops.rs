@@ -3155,7 +3155,15 @@ pub async fn flows_run(
             );
         }
         let observed = current_persisted_steps(config, &thread_id);
-        finish_flow_run_row(config, &thread_id, "failed", &observed, &[], Some(error));
+        finish_flow_run_row(
+            config,
+            &thread_id,
+            flow_id,
+            "failed",
+            &observed,
+            &[],
+            Some(error),
+        );
     };
 
     let origin = workflow_origin(flow_id, flow.require_approval);
@@ -3210,7 +3218,15 @@ pub async fn flows_run(
                 tracing::warn!(target: "flows", flow_id = %flow_id, error = %e, "[flows] flows_run: failed to record cancelled run");
             }
             let observed = current_persisted_steps(config, &thread_id);
-            finish_flow_run_row(config, &thread_id, "cancelled", &observed, &[], Some("run cancelled"));
+            finish_flow_run_row(
+                config,
+                &thread_id,
+                flow_id,
+                "cancelled",
+                &observed,
+                &[],
+                Some("run cancelled"),
+            );
             drop_checkpoint(config, &thread_id).await;
             return Ok(RpcOutcome::single_log(
                 json!({
@@ -3245,6 +3261,7 @@ pub async fn flows_run(
     finish_flow_run_row(
         config,
         &thread_id,
+        flow_id,
         status,
         &settled,
         &outcome.pending_approvals,
@@ -3438,6 +3455,7 @@ pub async fn flows_resume(
             finish_flow_run_row(
                 config,
                 thread_id,
+                flow_id,
                 "failed",
                 &observed,
                 &[],
@@ -3450,7 +3468,15 @@ pub async fn flows_resume(
             let msg = format!("flow resume timed out after {FLOW_RUN_TIMEOUT_SECS}s");
             let _ = store::record_run(config, flow_id, "failed");
             let observed = current_persisted_steps(config, thread_id);
-            finish_flow_run_row(config, thread_id, "failed", &observed, &[], Some(&msg));
+            finish_flow_run_row(
+                config,
+                thread_id,
+                flow_id,
+                "failed",
+                &observed,
+                &[],
+                Some(&msg),
+            );
             tracing::warn!(target: "flows", flow_id = %flow_id, %thread_id, timeout_secs = FLOW_RUN_TIMEOUT_SECS, "[flows] flows_resume: run timed out");
             return Err(msg);
         }
@@ -3463,6 +3489,7 @@ pub async fn flows_resume(
     finish_flow_run_row(
         config,
         thread_id,
+        flow_id,
         status,
         &settled,
         &outcome.pending_approvals,
@@ -3660,6 +3687,7 @@ pub async fn flows_cancel_run(config: &Config, run_id: &str) -> Result<RpcOutcom
     finish_flow_run_row(
         config,
         run_id,
+        &run.flow_id,
         "cancelled",
         &observed,
         &[],
@@ -3720,6 +3748,7 @@ fn start_flow_run_row(config: &Config, thread_id: &str, flow_id: &str) {
 fn finish_flow_run_row(
     config: &Config,
     thread_id: &str,
+    flow_id: &str,
     status: &str,
     steps: &[FlowRunStep],
     pending_approvals: &[String],
@@ -3737,6 +3766,42 @@ fn finish_flow_run_row(
     ) {
         tracing::warn!(target: "flows", thread_id, status, error = %e, "[flows] failed to persist flow run finish");
     }
+
+    // `status` can be `"pending_approval"` here (see `finalize_terminal_status`)
+    // when the run merely paused at a gate — that isn't a finish. `flows_resume`
+    // later settles under the SAME `thread_id`/`run_id`, and `useFlowRunFinished`
+    // de-dupes delivered events by `${flow_id}:${run_id}` (needed because the
+    // socket bridge re-emits this event under two aliases and must collapse
+    // them into one `onFinish` call). Publishing here for a pause would poison
+    // that dedup cache, so the real completion event after resume would be
+    // dropped as an "alias replay" and the run could stay stale in the runs
+    // list until the 30s poll backstop (Codex review, PR #5115). Gate the
+    // publish to actual terminal statuses; the row itself is still written
+    // above so poll-based fallbacks (list/get RPCs) see the paused state
+    // either way.
+    if status == "pending_approval" {
+        tracing::debug!(
+            target: "flows",
+            flow_id,
+            thread_id,
+            status,
+            "[flows] finish_flow_run_row: run paused for approval — not a finish, skipping FlowRunFinished"
+        );
+        return;
+    }
+
+    tracing::debug!(
+        target: "flows",
+        flow_id,
+        thread_id,
+        status,
+        "[flows] finish_flow_run_row: publishing FlowRunFinished"
+    );
+    crate::core::event_bus::publish_global(crate::core::event_bus::DomainEvent::FlowRunFinished {
+        flow_id: flow_id.to_string(),
+        run_id: thread_id.to_string(),
+        status: status.to_string(),
+    });
 }
 
 /// Reconstructs a lean per-node step list from a settled run's
