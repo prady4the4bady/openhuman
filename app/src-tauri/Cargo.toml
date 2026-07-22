@@ -178,6 +178,7 @@ openhuman_core = { path = "../..", package = "openhuman", default-features = fal
     # (#5048). Enforced by the HTTP_SERVER_COMPILED_IN compile assert in lib.rs.
     "http-server",
     "desktop-automation",
+    "medulla-local",
 ] }
 tinyjuice = { version = "0.2.1", default-features = false }
 
