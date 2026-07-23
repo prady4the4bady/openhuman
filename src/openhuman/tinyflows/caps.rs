@@ -989,6 +989,19 @@ impl OpenHumanAgentRunner {
     /// `run_via_registry_fallback` already gave `entry.model` — without this,
     /// a custom flow agent's model pin (e.g. `hint:reasoning`) silently
     /// dropped to the default chat model once routed through the harness.
+    ///
+    /// **Synchronous only (B40 / Gap 4).** A flow `agent` node runs here with
+    /// no chat thread bound via `thread_context::current_thread_id()`. If the
+    /// agent it runs is a delegating agent (orchestrator/subconscious) and
+    /// calls `spawn_async_subagent` directly, the tool now refuses (see the
+    /// `parent_thread_id.is_none()` guard in
+    /// `agent_orchestration::tools::spawn_async_subagent`) rather than
+    /// silently discarding the background result once it finishes —
+    /// `background_delivery` has nowhere to deliver it without a thread id.
+    /// This module does not bridge async subagent delivery into flow runs.
+    /// For work that needs to happen in parallel, model it as parallel flow
+    /// nodes (the tinyflows engine already fans those out) instead of
+    /// reaching for a background sub-agent from inside a single node.
     async fn run_via_harness(
         &self,
         agent_ref: &str,
